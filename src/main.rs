@@ -44,14 +44,36 @@ const METHOD_ACCESS_FLAGS: [(&str, u16); 12] = [
 fn main() {
     let file_path = "samples/Main.class";
     let content = read_file2bytes(file_path);
-    let mut parser = ParseClass::new(&content);
+    let mut parser = JavaClassFileParser::new(content);
     parser.parse();
 }
 
 #[derive(Debug)]
-struct MethodAttr {
-    name: String,
-    bytes: Vec<u8>,
+struct ByteStream {
+    xs: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct LineNumberTableEntry {
+    start_pc: u16,
+    line_number: u16,
+}
+
+#[derive(Debug)]
+enum Attr {
+    Code {
+        max_stack: u16,
+        max_locals: u16,
+        code_length: u32,
+        code: Vec<u8>,
+        attrs: Vec<Attr>,
+    },
+    LineNumberTable {
+        table: Vec<LineNumberTableEntry>,
+    },
+    SourceFile {
+        file: String,
+    },
 }
 
 #[derive(Debug)]
@@ -59,7 +81,7 @@ struct Method {
     access_flags: Vec<String>,
     name: String,
     descriptor: String,
-    attrs: Vec<MethodAttr>,
+    attrs: Vec<Attr>,
 }
 
 #[derive(Debug)]
@@ -85,6 +107,7 @@ struct JavaClassFile {
     this_class: String,
     super_class: String,
     methods: Vec<Method>,
+    attrs: Vec<Attr>,
 }
 
 impl JavaClassFile {
@@ -99,40 +122,41 @@ impl JavaClassFile {
             self.this_class, self.super_class
         );
         println!("{:#?}", self.methods);
+        println!("{:#?}", self.attrs);
     }
 }
 
-struct ParseClass<'a> {
-    rawbytes: &'a [u8],
+struct JavaClassFileParser {
+    bytes: ByteStream,
     class: JavaClassFile,
 }
 
-impl<'a> ParseClass<'a> {
-    pub fn new(rawbytes: &'a [u8]) -> Self {
+impl JavaClassFileParser {
+    pub fn new(bytes: Vec<u8>) -> Self {
         Self {
-            rawbytes,
+            bytes: ByteStream { xs: bytes },
             class: JavaClassFile::default(),
         }
     }
 
     pub fn parse(&mut self) {
-        self.class.magic = self.parse_u4();
-        self.class.minor = self.parse_u2();
-        self.class.major = self.parse_u2();
+        self.class.magic = self.bytes.parse_u4();
+        self.class.minor = self.bytes.parse_u2();
+        self.class.major = self.bytes.parse_u2();
         self.class.constant_pool = self.parse_constant_pool();
-        let access_flag_mask = self.parse_u2();
+        let access_flag_mask = self.bytes.parse_u2();
         self.class.access_flags = self.parse_access_flags(access_flag_mask, &CLASS_ACCESS_FLAGS);
 
-        let this_class_index = self.parse_u2();
-        let super_class_index = self.parse_u2();
-        self.class.this_class = self
-            .constant_pool_query(this_class_index as usize)
-            .unwrap();
-        self.class.super_class = self
-            .constant_pool_query(1 + super_class_index as usize)
-            .unwrap();
+        let this_class_index = self.bytes.parse_u2() + 1;
+        let super_class_index = self.bytes.parse_u2();
+        self.class.this_class =
+            Self::constant_pool_query(&self.class.constant_pool, this_class_index as usize)
+                .unwrap();
+        self.class.super_class =
+            Self::constant_pool_query(&self.class.constant_pool, 1 + super_class_index as usize)
+                .unwrap();
 
-        let interfaces_count = self.parse_u2();
+        let interfaces_count = self.bytes.parse_u2();
         for _ in 0..interfaces_count {
             assert!(
                 false,
@@ -142,7 +166,7 @@ impl<'a> ParseClass<'a> {
             );
         }
 
-        let fields_count = self.parse_u2();
+        let fields_count = self.bytes.parse_u2();
         for _ in 0..fields_count {
             assert!(
                 false,
@@ -153,45 +177,103 @@ impl<'a> ParseClass<'a> {
         }
 
         self.class.methods = self.parse_methods();
+        self.class.attrs = Self::parse_attrs(&mut self.bytes, &self.class.constant_pool);
 
         self.class.dump();
+        
+        println!("Unparsed Class file content: {:?}", self.bytes.xs);
     }
 
     fn parse_methods(&mut self) -> Vec<Method> {
         let mut methods: Vec<Method> = vec![];
 
-        for _ in 0..self.parse_u2() {
-            let mask = self.parse_u2();
-            let name_index = self.parse_u2();
-            let descriptor_index = self.parse_u2();
+        for _ in 0..self.bytes.parse_u2() {
+            let mask = self.bytes.parse_u2();
+            let name_index = self.bytes.parse_u2();
+            let descriptor_index = self.bytes.parse_u2();
 
             methods.push(Method {
                 access_flags: self.parse_access_flags(mask, &METHOD_ACCESS_FLAGS),
-                name: self
-                    .constant_pool_query((name_index - 1) as usize)
-                    .unwrap(),
-                descriptor: self
-                    .constant_pool_query((descriptor_index - 1) as usize)
-                    .unwrap(),
-                attrs: self.parse_method_attrs(),
+                name: Self::constant_pool_query(
+                    &self.class.constant_pool,
+                    (name_index - 1) as usize,
+                )
+                .unwrap(),
+                descriptor: Self::constant_pool_query(
+                    &self.class.constant_pool,
+                    (descriptor_index - 1) as usize,
+                )
+                .unwrap(),
+                attrs: Self::parse_attrs(&mut self.bytes, &self.class.constant_pool),
             });
         }
         methods
     }
 
-    fn parse_method_attrs(&mut self) -> Vec<MethodAttr> {
-        let mut attrs: Vec<MethodAttr> = vec![];
-        for _ in 0..self.parse_u2() {
-            let name_index = self.parse_u2();
-            let length = self.parse_u4();
+    fn parse_attrs(bytes: &mut ByteStream, cp: &ConstantPool) -> Vec<Attr> {
+        let mut attrs: Vec<Attr> = vec![];
 
-            attrs.push(MethodAttr {
-                name: self
-                    .constant_pool_query((name_index - 1) as usize)
-                    .unwrap(),
-                bytes: self.parse_n(length as usize).to_vec(),
-            });
+        for _ in 0..bytes.parse_u2() {
+            let name_index = bytes.parse_u2();
+            let name = Self::constant_pool_query(cp, (name_index - 1) as usize).unwrap();
+            let length = bytes.parse_u4();
+
+            match name.as_ref() {
+                "Code" => {
+                    let mut code_attr_bytes = ByteStream {
+                        xs: bytes.parse_n(length as usize),
+                    };
+
+                    let max_stack = code_attr_bytes.parse_u2();
+                    let max_locals = code_attr_bytes.parse_u2();
+                    let code_length = code_attr_bytes.parse_u4();
+                    let code = code_attr_bytes.parse_n(code_length as usize);
+
+                    for _ in 0..code_attr_bytes.parse_u2() {
+                        assert!(
+                            false,
+                            "[ERROR]: exception_table parser not implemented yet!\n"
+                        );
+                    }
+
+                    let nested_attrs = Self::parse_attrs(&mut code_attr_bytes, cp);
+
+                    attrs.push(Attr::Code {
+                        max_stack,
+                        max_locals,
+                        code_length,
+                        code,
+                        attrs: nested_attrs,
+                    });
+                }
+                "LineNumberTable" => {
+                    let mut table: Vec<LineNumberTableEntry> = vec![];
+                    let mut lnt_attr_bytes = ByteStream {
+                        xs: bytes.parse_n(length as usize),
+                    };
+                    for _ in 0..lnt_attr_bytes.parse_u2() {
+                        table.push(LineNumberTableEntry {
+                            start_pc: lnt_attr_bytes.parse_u2(),
+                            line_number: lnt_attr_bytes.parse_u2()
+                        })
+                    }
+                    attrs.push(Attr::LineNumberTable {
+                        table,
+                    });
+                },
+                "SourceFile" => {
+                    let sourcefile_index = bytes.parse_u2();
+                    attrs.push(Attr::SourceFile {
+                        file: Self::constant_pool_query(cp, (sourcefile_index - 1) as usize).unwrap(), 
+                    });
+                },
+                _ => {
+                    eprintln!("[ERROR]:{}:{}: Unknown Attr: {name}", file!(), line!());
+                    exit(1);
+                }
+            }
         }
+
         attrs
     }
 
@@ -208,22 +290,22 @@ impl<'a> ParseClass<'a> {
     pub fn parse_constant_pool(&mut self) -> ConstantPool {
         let mut constant_pool = ConstantPool { info: vec![] };
 
-        let count = self.parse_u2();
+        let count = self.bytes.parse_u2();
         for _ in 0..(count - 1) {
-            let tag = self.parse_u1();
+            let tag = self.bytes.parse_u1();
             match tag {
                 CONSTANT_CLASS => constant_pool.info.push(ConstantPoolInfo {
                     tag,
                     tag_name: "CONSTANT_CLASS".to_string(),
-                    entries: vec![("name_index".to_string(), self.parse_u2())],
+                    entries: vec![("name_index".to_string(), self.bytes.parse_u2())],
                     bytes: None,
                 }),
                 CONSTANT_METHODREF => constant_pool.info.push(ConstantPoolInfo {
                     tag,
                     tag_name: "CONSTANT_METHODREF".to_string(),
                     entries: vec![
-                        ("class_index".to_string(), self.parse_u2()),
-                        ("name_and_type_index".to_string(), self.parse_u2()),
+                        ("class_index".to_string(), self.bytes.parse_u2()),
+                        ("name_and_type_index".to_string(), self.bytes.parse_u2()),
                     ],
                     bytes: None,
                 }),
@@ -231,19 +313,19 @@ impl<'a> ParseClass<'a> {
                     tag,
                     tag_name: "CONSTANT_NAMEANDTYPE".to_string(),
                     entries: vec![
-                        ("name_index".to_string(), self.parse_u2()),
-                        ("descriptor_index".to_string(), self.parse_u2()),
+                        ("name_index".to_string(), self.bytes.parse_u2()),
+                        ("descriptor_index".to_string(), self.bytes.parse_u2()),
                     ],
                     bytes: None,
                 }),
                 CONSTANT_UTF8 => {
-                    let length = self.parse_u2();
+                    let length = self.bytes.parse_u2();
                     constant_pool.info.push(ConstantPoolInfo {
                         tag,
                         tag_name: "CONSTANT_UTF8".to_string(),
                         entries: vec![("length".to_string(), length)],
                         bytes: Some(
-                            String::from_utf8(self.parse_n(length as usize).to_vec()).unwrap(),
+                            String::from_utf8(self.bytes.parse_n(length as usize)).unwrap(),
                         ),
                     })
                 }
@@ -251,15 +333,15 @@ impl<'a> ParseClass<'a> {
                     tag,
                     tag_name: "CONSTANT_FIELDREF".to_string(),
                     entries: vec![
-                        ("class_index".to_string(), self.parse_u2()),
-                        ("name_and_type_index".to_string(), self.parse_u2()),
+                        ("class_index".to_string(), self.bytes.parse_u2()),
+                        ("name_and_type_index".to_string(), self.bytes.parse_u2()),
                     ],
                     bytes: None,
                 }),
                 CONSTANT_STRING => constant_pool.info.push(ConstantPoolInfo {
                     tag,
                     tag_name: "CONSTANT_STRING".to_string(),
-                    entries: vec![("string_index".to_string(), self.parse_u2())],
+                    entries: vec![("string_index".to_string(), self.bytes.parse_u2())],
                     bytes: None,
                 }),
                 _ => {
@@ -272,48 +354,43 @@ impl<'a> ParseClass<'a> {
         constant_pool
     }
 
-    fn constant_pool_query(&self, index: usize) -> Option<String> {
-        self.class.constant_pool.info.get(index).unwrap().bytes.clone()
+    fn constant_pool_query(cp: &ConstantPool, index: usize) -> Option<String> {
+        cp.info.get(index).unwrap().bytes.clone()
     }
+}
 
+impl ByteStream {
     fn parse_u1(&mut self) -> u8 {
-        if self.rawbytes.len() < 1 {
-            eprintln!("[ERROR]:{}:{}: Out of bound", file!(), line!());
-            exit(1);
-        }
-        let res = self.rawbytes[0];
-        self.rawbytes = &self.rawbytes[1..];
-        res
+        self.check_bound(1);
+        self.xs.remove(0)
     }
 
     fn parse_u2(&mut self) -> u16 {
-        if self.rawbytes.len() < 2 {
-            eprintln!("[ERROR]:{}:{}: Out of bound", file!(), line!());
-            exit(1);
-        }
-        let res = &self.rawbytes[0..2];
-        self.rawbytes = &self.rawbytes[2..];
+        self.check_bound(2);
+        let res = self.xs[0..2].to_vec();
+        self.xs = self.xs[2..].to_vec();
         u16::from_be_bytes(res.try_into().unwrap())
     }
 
     fn parse_u4(&mut self) -> u32 {
-        if self.rawbytes.len() < 4 {
-            eprintln!("[ERROR]:{}:{}: Out of bound", file!(), line!());
-            exit(1);
-        }
-        let res = &self.rawbytes[0..4];
-        self.rawbytes = &self.rawbytes[4..];
+        self.check_bound(4);
+        let res = self.xs[0..4].to_vec();
+        self.xs = self.xs[4..].to_vec();
         u32::from_be_bytes(res.try_into().unwrap())
     }
 
-    fn parse_n(&mut self, n: usize) -> &[u8] {
-        if self.rawbytes.len() < n {
+    fn parse_n(&mut self, n: usize) -> Vec<u8> {
+        self.check_bound(n);
+        let res = self.xs[0..n].to_vec();
+        self.xs = self.xs[n..].to_vec();
+        res
+    }
+
+    fn check_bound(&self, n: usize) {
+        if self.xs.len() < n {
             eprintln!("[ERROR]:{}:{}: Out of bound", file!(), line!());
             exit(1);
         }
-        let res = &self.rawbytes[0..n];
-        self.rawbytes = &self.rawbytes[n..];
-        res
     }
 }
 
