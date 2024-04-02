@@ -98,35 +98,38 @@ impl JavaClassFile {
             "This Class : {:?}, Super Class: {:?}",
             self.this_class, self.super_class
         );
-        println!("{:?}", self.methods);
+        println!("{:#?}", self.methods);
     }
 }
 
 struct ParseClass<'a> {
     rawbytes: &'a [u8],
+    class: JavaClassFile,
 }
 
 impl<'a> ParseClass<'a> {
     pub fn new(rawbytes: &'a [u8]) -> Self {
-        Self { rawbytes }
+        Self {
+            rawbytes,
+            class: JavaClassFile::default(),
+        }
     }
 
     pub fn parse(&mut self) {
-        let mut class = JavaClassFile::default();
-        class.magic = self.parse_u4();
-        class.minor = self.parse_u2();
-        class.major = self.parse_u2();
-        class.constant_pool = self.parse_constant_pool();
+        self.class.magic = self.parse_u4();
+        self.class.minor = self.parse_u2();
+        self.class.major = self.parse_u2();
+        self.class.constant_pool = self.parse_constant_pool();
         let access_flag_mask = self.parse_u2();
-        class.access_flags = self.parse_access_flags(access_flag_mask, &CLASS_ACCESS_FLAGS);
+        self.class.access_flags = self.parse_access_flags(access_flag_mask, &CLASS_ACCESS_FLAGS);
 
         let this_class_index = self.parse_u2();
         let super_class_index = self.parse_u2();
-        class.this_class = self
-            .constant_pool_query(&class.constant_pool, this_class_index as usize)
+        self.class.this_class = self
+            .constant_pool_query(this_class_index as usize)
             .unwrap();
-        class.super_class = self
-            .constant_pool_query(&class.constant_pool, 1 + super_class_index as usize)
+        self.class.super_class = self
+            .constant_pool_query(1 + super_class_index as usize)
             .unwrap();
 
         let interfaces_count = self.parse_u2();
@@ -149,12 +152,12 @@ impl<'a> ParseClass<'a> {
             );
         }
 
-        class.methods = self.parse_methods(&class.constant_pool);
+        self.class.methods = self.parse_methods();
 
-        class.dump();
+        self.class.dump();
     }
 
-    fn parse_methods(&mut self, cp: &ConstantPool) -> Vec<Method> {
+    fn parse_methods(&mut self) -> Vec<Method> {
         let mut methods: Vec<Method> = vec![];
 
         for _ in 0..self.parse_u2() {
@@ -165,18 +168,18 @@ impl<'a> ParseClass<'a> {
             methods.push(Method {
                 access_flags: self.parse_access_flags(mask, &METHOD_ACCESS_FLAGS),
                 name: self
-                    .constant_pool_query(cp, (name_index - 1) as usize)
+                    .constant_pool_query((name_index - 1) as usize)
                     .unwrap(),
                 descriptor: self
-                    .constant_pool_query(cp, (descriptor_index - 1) as usize)
+                    .constant_pool_query((descriptor_index - 1) as usize)
                     .unwrap(),
-                attrs: self.parse_method_attrs(cp),
+                attrs: self.parse_method_attrs(),
             });
         }
         methods
     }
 
-    fn parse_method_attrs(&mut self, cp: &ConstantPool) -> Vec<MethodAttr> {
+    fn parse_method_attrs(&mut self) -> Vec<MethodAttr> {
         let mut attrs: Vec<MethodAttr> = vec![];
         for _ in 0..self.parse_u2() {
             let name_index = self.parse_u2();
@@ -184,7 +187,7 @@ impl<'a> ParseClass<'a> {
 
             attrs.push(MethodAttr {
                 name: self
-                    .constant_pool_query(cp, (name_index - 1) as usize)
+                    .constant_pool_query((name_index - 1) as usize)
                     .unwrap(),
                 bytes: self.parse_n(length as usize).to_vec(),
             });
@@ -269,8 +272,8 @@ impl<'a> ParseClass<'a> {
         constant_pool
     }
 
-    fn constant_pool_query(&self, pool: &ConstantPool, index: usize) -> Option<String> {
-        pool.info.get(index).unwrap().bytes.clone()
+    fn constant_pool_query(&self, index: usize) -> Option<String> {
+        self.class.constant_pool.info.get(index).unwrap().bytes.clone()
     }
 
     fn parse_u1(&mut self) -> u8 {
