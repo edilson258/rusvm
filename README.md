@@ -1,6 +1,6 @@
 # Java Class File Parser in Rust
 
-This Rust project, `rusvm` (short for Rust Java Class File Parser), is a Java class file parser capable of extracting information about classes, methods, attributes, and more from Java bytecode files (.class). It aims to provide a comprehensive tool for analyzing Java class files in Rust.
+This Rust project, `rusvm` is a Java class file parser capable of extracting information about classes, methods, attributes, and more from Java bytecode files (.class). It aims to provide a comprehensive tool for analyzing Java class files in Rust.
 
 ## Features
 
