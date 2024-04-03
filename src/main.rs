@@ -1,19 +1,26 @@
-use std::{env, fs::File, io::Read, ops::BitAnd, process::exit, usize};
+use std::{
+    env,
+    fs::File,
+    io::{self, Read, Write},
+    ops::BitAnd,
+    process::exit,
+    usize,
+};
 
 const CONSTANT_CLASS: u8 = 7;
 const CONSTANT_FIELDREF: u8 = 9;
 const CONSTANT_METHODREF: u8 = 10;
-const CONSTANT_INTERFACEMETHODREF: u8 = 11;
+// const CONSTANT_INTERFACEMETHODREF: u8 = 11;
 const CONSTANT_STRING: u8 = 8;
-const CONSTANT_INTEGER: u8 = 3;
-const CONSTANT_FLOAT: u8 = 4;
-const CONSTANT_LONG: u8 = 5;
-const CONSTANT_DOUBLE: u8 = 6;
+// const CONSTANT_INTEGER: u8 = 3;
+//const CONSTANT_FLOAT: u8 = 4;
+// const CONSTANT_LONG: u8 = 5;
+// const CONSTANT_DOUBLE: u8 = 6;
 const CONSTANT_NAMEANDTYPE: u8 = 12;
 const CONSTANT_UTF8: u8 = 1;
-const CONSTANT_METHODHANDLE: u8 = 15;
-const CONSTANT_METHODTYPE: u8 = 16;
-const CONSTANT_INVOKEDYNAMIC: u8 = 18;
+// const CONSTANT_METHODHANDLE: u8 = 15;
+// const CONSTANT_METHODTYPE: u8 = 16;
+// const CONSTANT_INVOKEDYNAMIC: u8 = 18;
 
 const CLASS_ACCESS_FLAGS: [(&str, u16); 8] = [
     ("ACC_PUBLIC", 0x0001),
@@ -41,17 +48,33 @@ const METHOD_ACCESS_FLAGS: [(&str, u16); 12] = [
     ("ACC_SYNTHETIC", 0x1000),
 ];
 
-fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        eprintln!("Usage: main <path_to_class_file>");
-        exit(1);
-    }
+#[derive(Default, Clone)]
+struct JavaClassFile {
+    magic: u32,
+    minor: u16,
+    major: u16,
+    constant_pool: ConstantPool,
+    access_flags: Vec<String>,
+    this_class: String,
+    super_class: String,
+    methods: Vec<Method>,
+    attrs: Vec<Attr>,
+}
 
-    let file_path = &args[1];
-    let content = read_file2bytes(file_path);
-    let mut parser = JavaClassFileParser::new(content);
-    parser.parse();
+#[derive(Debug)]
+enum QueryResult {
+    QMethod(Method),
+    QMethodList(Vec<Method>),
+}
+
+#[derive(Debug)]
+enum QueryType {
+    QMethod(String),
+    QMethodList,
+}
+
+struct JavaClassFileQuery {
+    class_file: JavaClassFile,
 }
 
 #[derive(Debug)]
@@ -59,13 +82,15 @@ struct ByteStream {
     xs: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[allow(unused)]
 struct LineNumberTableEntry {
     start_pc: u16,
     line_number: u16,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[allow(unused)]
 enum Attr {
     Code {
         max_stack: u16,
@@ -82,7 +107,8 @@ enum Attr {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[allow(unused)]
 struct Method {
     access_flags: Vec<String>,
     name: String,
@@ -90,7 +116,8 @@ struct Method {
     attrs: Vec<Attr>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[allow(unused)]
 struct ConstantPoolInfo {
     tag: u8,
     tag_name: String,
@@ -98,17 +125,22 @@ struct ConstantPoolInfo {
     bytes: Option<String>,
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 struct ConstantPool {
     count: usize,
     info: Vec<ConstantPoolInfo>,
 }
 
+struct JavaClassFileParser {
+    bytes: ByteStream,
+    class: JavaClassFile,
+}
+
 impl ConstantPool {
     pub fn query(&self, index: usize) -> String {
-        let index = index - 1;
+        let index: usize = index - 1;
 
-        if index < 0 || index > self.count {
+        if index > self.count {
             eprintln!(
                 "[ERROR]:{}:{}: Constant Pool Index out of bound",
                 file!(),
@@ -125,19 +157,6 @@ impl ConstantPool {
     }
 }
 
-#[derive(Default)]
-struct JavaClassFile {
-    magic: u32,
-    minor: u16,
-    major: u16,
-    constant_pool: ConstantPool,
-    access_flags: Vec<String>,
-    this_class: String,
-    super_class: String,
-    methods: Vec<Method>,
-    attrs: Vec<Attr>,
-}
-
 impl JavaClassFile {
     pub fn dump(&self) {
         println!("Magic: 0x{:x}", self.magic);
@@ -148,14 +167,10 @@ impl JavaClassFile {
             "This Class : {:?}\nSuper Class: {:?}",
             self.this_class, self.super_class
         );
+        println!("{:#?}", self.constant_pool);
         println!("{:#?}", self.methods);
         println!("{:#?}", self.attrs);
     }
-}
-
-struct JavaClassFileParser {
-    bytes: ByteStream,
-    class: JavaClassFile,
 }
 
 impl JavaClassFileParser {
@@ -166,7 +181,7 @@ impl JavaClassFileParser {
         }
     }
 
-    pub fn parse(&mut self) {
+    pub fn parse(&mut self) -> JavaClassFile {
         self.class.magic = self.bytes.parse_u4();
         self.class.minor = self.bytes.parse_u2();
         self.class.major = self.bytes.parse_u2();
@@ -206,9 +221,7 @@ impl JavaClassFileParser {
         self.class.methods = self.parse_methods();
         self.class.attrs = self.parse_attrs();
 
-        self.class.dump();
-
-        println!("Unparsed Class file content: {:?}", self.bytes.xs);
+        self.class.to_owned()
     }
 
     fn parse_methods(&mut self) -> Vec<Method> {
@@ -283,7 +296,7 @@ impl JavaClassFileParser {
                 }
                 "SourceFile" => {
                     attrs.push(Attr::SourceFile {
-                        file: cp.query(bytes.parse_u2() as usize) 
+                        file: cp.query(bytes.parse_u2() as usize),
                     });
                 }
                 _ => {
@@ -378,6 +391,46 @@ impl JavaClassFileParser {
     }
 }
 
+impl JavaClassFileQuery {
+    pub fn new(class_file: JavaClassFile) -> Self {
+        Self { class_file }
+    }
+
+    pub fn query(&self, q: QueryType) -> Option<QueryResult> {
+        match q {
+            QueryType::QMethod(name) => {
+                let m = self.class_file.methods.iter().find(|m| m.name == name);
+                if m.is_some() {
+                    let m = m.unwrap();
+                    return Some(QueryResult::QMethod(Method {
+                        access_flags: m.access_flags.clone(),
+                        name: m.name.clone(),
+                        descriptor: m.descriptor.clone(),
+                        attrs: vec![],
+                    }));
+                }
+                None
+            }
+            QueryType::QMethodList => {
+                let list = self
+                    .class_file
+                    .methods
+                    .iter()
+                    .map(|m| {
+                        return Method {
+                            access_flags: m.access_flags.clone(),
+                            name: m.name.clone(),
+                            descriptor: m.descriptor.clone(),
+                            attrs: vec![],
+                        };
+                    })
+                    .collect::<Vec<Method>>();
+                return Some(QueryResult::QMethodList(list));
+            }
+        }
+    }
+}
+
 impl ByteStream {
     fn parse_u1(&mut self) -> u8 {
         self.check_bound(1);
@@ -428,4 +481,77 @@ fn read_file2bytes(path: &str) -> Vec<u8> {
         .unwrap();
 
     buf
+}
+
+fn prompt(class_file: JavaClassFile, query: JavaClassFileQuery) {
+    println!(
+        r"
+        =====================================
+
+             Welcome to RusVM v.0.1 alpha
+
+          [1] => Search a method
+          [2] => List all methods
+          [3] => dump entire class file
+
+"
+    );
+
+    let mut user_input = String::new();
+    print!("Option > ");
+    io::stdout()
+        .flush()
+        .expect("[ERROR]: Failed to flush stdout");
+    io::stdin()
+        .read_line(&mut user_input)
+        .expect("[ERROR]: Provide an input");
+
+    match user_input.trim() {
+        "1" => {
+            let mut user_input = String::new();
+            print!("Method Name > ");
+            io::stdout()
+                .flush()
+                .expect("[ERROR]: Failed to flush stdout");
+            io::stdin()
+                .read_line(&mut user_input)
+                .expect("[ERROR]: Provide an input");
+
+            user_input = user_input.trim().to_string();
+
+            let method = query.query(QueryType::QMethod(user_input.clone()));
+            if method.is_none() {
+                eprintln!("[ERROR]: method {user_input} not found");
+                exit(1)
+            }
+            println!("\nMethod\n");
+            println!("{:#?}\n", method.unwrap());
+        }
+        "2" => {
+            println!("\n List of avalible methods\n");
+            println!("{:#?}\n", query.query(QueryType::QMethodList).unwrap());
+        }
+        "3" => {
+            class_file.dump();
+        }
+        _ => {
+            eprintln!("[ERROR]: Invalid Option: {user_input}");
+            exit(1);
+        }
+    }
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 2 {
+        eprintln!("Usage: main <path_to_class_file>");
+        exit(1);
+    }
+
+    let file_path = &args[1];
+    let content = read_file2bytes(file_path);
+    let mut parser = JavaClassFileParser::new(content);
+    let class_file = parser.parse();
+    let query = JavaClassFileQuery::new(class_file.clone());
+    prompt(class_file, query);
 }
