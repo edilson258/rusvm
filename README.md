@@ -22,8 +22,9 @@ To use `rusvm`, follow these steps:
    git clone https://github.com/edilson258/rusvm.git
    cd rusvm
    cargo build
-   cargo run Main.class
+   cargo run samples/Main.class
    ```
+Note: Replace samples/Main.class with the path for you class file
 
 ## License
 
