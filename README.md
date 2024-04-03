@@ -24,7 +24,8 @@ To use `rusvm`, follow these steps:
    cargo build
    cargo run samples/Main.class
    ```
-Note: Replace samples/Main.class with the path for you class file
+
+   Note: Replace samples/Main.class with the path for you class file
 
 ## License
 
@@ -32,4 +33,4 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ## Contributing
 
-Contributions to `rusvm` are welcome! If you encounter any issues, have suggestions for improvements, or want to contribute new features, feel free to open an issue or submit a pull request on GitHub at [rusvm](https://github.com/yourusername/rusvm).
+Contributions to `rusvm` are welcome! If you encounter any issues, have suggestions for improvements, or want to contribute new features, feel free to open an issue or submit a pull request on GitHub at [rusvm](https://github.com/edilson258/rusvm).
