@@ -1,6 +1,6 @@
 use std::process::exit;
 
-use super::constantpool::ConstantPool;
+use super::{bytecode::parse_byte_code, constantpool::ConstantPool};
 use crate::utils::bytestream::ByteStream;
 
 #[derive(Debug, Clone)]
@@ -17,7 +17,7 @@ pub enum Attr {
         max_stack: u16,
         max_locals: u16,
         code_length: u32,
-        code: Vec<u8>,
+        code: Vec<String>,
         attrs: Vec<Attr>,
     },
     LineNumberTable {
@@ -48,7 +48,9 @@ fn __parse_attrs(bytes: &mut ByteStream, cp: &ConstantPool) -> Vec<Attr> {
                 let max_stack = code_attr_bytes.parse_u2();
                 let max_locals = code_attr_bytes.parse_u2();
                 let code_length = code_attr_bytes.parse_u4();
-                let code = code_attr_bytes.parse_n(code_length as usize);
+                let code = parse_byte_code(ByteStream {
+                    xs: code_attr_bytes.parse_n(code_length as usize),
+                }, cp);
 
                 for _ in 0..code_attr_bytes.parse_u2() {
                     assert!(
